@@ -1,0 +1,105 @@
+
+name: Generate Warframe Drop Data
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "0 */6 * * *"
+
+permissions:
+  contents: write
+
+concurrency:
+  group: warframe-drops
+  cancel-in-progress: false
+
+jobs:
+  generate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Clone WFCD parser
+        run: |
+          git clone --depth 1 \
+            https://github.com/WFCD/warframe-drop-data.git \
+            /tmp/warframe-drop-parser
+
+      - name: Install dependencies
+        working-directory: /tmp/warframe-drop-parser
+        run: |
+          npm install --ignore-scripts --no-package-lock
+
+      - name: Generate drop tables
+        working-directory: /tmp/warframe-drop-parser
+        run: |
+          node generateData.js -force
+
+      - name: Validate JSON
+        run: |
+          node <<'NODE'
+          const fs = require("node:fs");
+
+          const file = "/tmp/warframe-drop-parser/data/all.json";
+
+          if (!fs.existsSync(file)) {
+            throw new Error("all.json was not generated");
+          }
+
+          const data = JSON.parse(fs.readFileSync(file, "utf8"));
+
+          const required = [
+            "missionRewards",
+            "relics",
+            "enemyModTables",
+            "enemyBlueprintTables",
+            "modLocations",
+            "blueprintLocations",
+            "sortieRewards",
+            "transientRewards"
+          ];
+
+          for (const key of required) {
+            if (
+              !data[key] ||
+              Object.keys(data[key]).length === 0
+            ) {
+              throw new Error(`Missing or empty category: ${key}`);
+            }
+          }
+
+          console.log("JSON validation passed");
+          console.log("Categories:", Object.keys(data));
+          console.log("File size:", fs.statSync(file).size);
+          NODE
+
+      - name: Copy generated JSON
+        run: |
+          mkdir -p data
+
+          cp /tmp/warframe-drop-parser/data/all.json \
+            data/all.json
+
+      - name: Commit and push changes
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email \
+            "41898282+github-actions[bot]@users.noreply.github.com"
+
+          git add data/all.json
+
+          if git diff --cached --quiet; then
+            echo "No changes detected. Skipping commit."
+            exit 0
+          fi
+
+          git commit -m "Update Warframe drop tables"
+          git push
